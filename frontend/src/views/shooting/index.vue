@@ -96,17 +96,24 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  let actionError = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('拍摄进度动作未生效，请稍后重试')
+    const result = await response.json().catch(() => null)
+    if (!response.ok || !result || result.ok === false) {
+      actionError = result?.message || '拍摄进度动作未生效，请稍后重试'
     }
-    await reload()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '拍摄进度操作失败'
+    actionError = error instanceof Error ? error.message : '拍摄进度操作失败'
+  }
+  // 无论动作成功、被拦截还是请求中断，都重新拉取列表与服务端对齐；
+  // 服务端对已完成项幂等，中断后重试只会更新未完成的拍摄日
+  await reload()
+  if (actionError) {
+    errorMessage.value = actionError
   }
 }
 
@@ -119,9 +126,12 @@ async function reload() {
       throw new Error('拍摄日列表读取失败')
     }
     const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
+    rows.value = payload?.items ?? []
+    total.value = payload?.total ?? 0
   } catch (error) {
+    // 读取失败或返回空数据时清空列表，不再展示上次加载的完成场次
+    rows.value = []
+    total.value = 0
     errorMessage.value = error instanceof Error ? error.message : '拍摄进度列表读取失败'
   }
 }
