@@ -30,6 +30,38 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/stats")
+def shooting_stats() -> dict[str, Any]:
+    """列表页卡片统计：计划拍摄日、已完成拍摄日、顺延天数，口径与运营概览一致。"""
+    counts = service.stats()
+    return {
+        "cards": [
+            {"label": "计划拍摄日", "value": counts["planned"]},
+            {"label": "已完成拍摄日", "value": counts["completed"]},
+            {"label": "顺延天数", "value": counts["postponed"]},
+        ],
+        **counts,
+    }
+
+
+@router.post("/retry")
+def retry_pending() -> ActionResult:
+    """中断后的批量重试：只规整未完成拍摄日，已收工记录及其完成场次保持不变。"""
+    counts = service.retry_pending()
+    return ActionResult(
+        ok=True,
+        message=f"重试完成：已更新 {counts['updated']} 个未完成拍摄日，保留 {counts['skipped']} 个收工记录",
+        entry={"updated": counts["updated"], "skipped": counts["skipped"]},
+    )
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出拍摄进度清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "shooting", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条拍摄日明细；不存在时给出可读的错误说明。"""
@@ -50,16 +82,12 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条拍摄日执行开始拍摄、确认收工、申请顺延；不允许的动作会被拦下并说明原因。"""
+    """对单条拍摄日执行开始拍摄、确认收工、申请顺延；不允许的动作会被拦下并说明原因。
+
+    已收工为终态；重复提交按幂等处理，中断后重试不会产生异常进度。
+    """
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message, changed = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出拍摄进度清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "shooting", "total": total, "items": items}
